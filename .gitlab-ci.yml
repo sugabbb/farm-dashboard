@@ -1,0 +1,318 @@
+image: docker:27.5.1-cli
+
+variables:
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_BUILDKIT: "1"
+
+  SERVICE_NAME: "farm-dashboard"
+  ARTIFACT_HOST: "asia-southeast1-docker.pkg.dev"
+  GCP_PROJECT_ID: "drml-2019"
+  ARTIFACT_REPOSITORY: "pbb-farm-dashboard"
+
+  EXTERNAL_DOCKER_NETWORK: "drml-development"
+  APPLICATION_PORT: "9000"
+  GCS_CREDENTIALS_HOST_PATH: "/opt/pondok-berkah-dashboard/.docker/gcs-service-account.json"
+  PUBLIC_APP_URL: "https://pbb-farm-dash.dreamhouselab.com"
+  SSH_HOST_KEY_SHA256: "SHA256:4/HoLRBzYKb9CizD+dx5eQKewmMx6A8LD2wzaxYcn6Y"
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+    - when: never
+
+stages:
+  - build
+  - deploy
+  - cleanup
+
+.build_template:
+  stage: build
+  timeout: 30m
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+  cache: {}
+  before_script:
+    - |
+      set -eu
+      for value in "$ARTIFACT_HOST" "$GCP_PROJECT_ID" "$ARTIFACT_REPOSITORY"; do
+        case "$value" in
+          ""|*REPLACE_ME*) echo "Artifact Registry configuration is incomplete." >&2; exit 1 ;;
+        esac
+      done
+      test -n "${GCP_ARTIFACT_KEY_BASE64:-}" || {
+        echo "GCP_ARTIFACT_KEY_BASE64 is required." >&2
+        exit 1
+      }
+      export ARTIFACT_IMAGE="${ARTIFACT_HOST}/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}"
+      printf '%s' "$GCP_ARTIFACT_KEY_BASE64" \
+        | base64 -d \
+        | docker login -u _json_key --password-stdin "https://${ARTIFACT_HOST}"
+  script:
+    - |
+      set -eu
+      export ARTIFACT_IMAGE="${ARTIFACT_HOST}/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}"
+      docker pull "${ARTIFACT_IMAGE}:latest" || echo "No reusable latest-image cache is available yet."
+      docker build \
+        --pull \
+        --network host \
+        --cache-from "${ARTIFACT_IMAGE}:latest" \
+        --build-arg "BUILDKIT_INLINE_CACHE=1" \
+        --build-arg "IMAGE_VERSION=${IMAGE_TAG}" \
+        --build-arg "VCS_REF=${CI_COMMIT_SHA}" \
+        --tag "${ARTIFACT_IMAGE}:${IMAGE_TAG}" \
+        .
+      docker push "${ARTIFACT_IMAGE}:${IMAGE_TAG}"
+
+build_main:
+  extends: .build_template
+  variables:
+    IMAGE_TAG: "latest"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
+
+build_prod:
+  extends: .build_template
+  variables:
+    IMAGE_TAG: "$CI_COMMIT_TAG"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+
+deploy_prod:
+  stage: deploy
+  image: docker:27.5.1-cli
+  cache: {}
+  variables:
+    DOCKER_HOST: ""
+  needs:
+    - build_prod
+  resource_group: production-dashboard
+  environment:
+    name: production
+    url: $PUBLIC_APP_URL
+  before_script:
+    - apk add --no-cache curl openssh-client
+    - |
+      set -eu
+      for value in "$ARTIFACT_HOST" "$GCP_PROJECT_ID" "$ARTIFACT_REPOSITORY" "$PUBLIC_APP_URL" "$SSH_HOST_KEY_SHA256"; do
+        case "$value" in
+          ""|*REPLACE_ME*) echo "Production deployment configuration is incomplete." >&2; exit 1 ;;
+        esac
+      done
+      test -n "${SSH_USERNAME:-}" || { echo "SSH_USERNAME is required." >&2; exit 1; }
+      test -n "${SSH_IP:-}" || { echo "SSH_IP is required." >&2; exit 1; }
+      test -n "${SSH_PRIVATE_KEY_BASE64:-}" || { echo "SSH_PRIVATE_KEY_BASE64 is required." >&2; exit 1; }
+      test -n "${GCP_ARTIFACT_KEY_BASE64:-}" || { echo "GCP_ARTIFACT_KEY_BASE64 is required." >&2; exit 1; }
+      if grep -q 'REPLACE_ME' .docker/.env.production; then
+        echo ".docker/.env.production still contains REPLACE_ME values." >&2
+        exit 1
+      fi
+      eval "$(ssh-agent -s)"
+      printf '%s' "$SSH_PRIVATE_KEY_BASE64" | base64 -d | tr -d '\r' | ssh-add -
+      install -d -m 700 ~/.ssh
+      ssh-keyscan -T 10 -H "$SSH_IP" > ~/.ssh/known_hosts
+      chmod 600 ~/.ssh/known_hosts
+      ssh-keygen -lf ~/.ssh/known_hosts -E sha256 \
+        | awk '{print $2}' \
+        | grep -Fx "$SSH_HOST_KEY_SHA256" > /dev/null || {
+          echo "The server SSH host-key fingerprint does not match SSH_HOST_KEY_SHA256." >&2
+          exit 1
+        }
+      {
+        printf 'Host %s\n' "$SSH_IP"
+        printf '  User %s\n' "$SSH_USERNAME"
+        printf '  StrictHostKeyChecking yes\n'
+        printf '  ControlMaster auto\n'
+        printf '  ControlPath ~/.ssh/control-%%C\n'
+        printf '  ControlPersist yes\n'
+        printf '  ServerAliveInterval 15\n'
+        printf '  ServerAliveCountMax 4\n'
+      } > ~/.ssh/config
+      chmod 600 ~/.ssh/config
+      ssh -MNf "${SSH_USERNAME}@${SSH_IP}" || {
+        echo "Unable to establish the persistent SSH deployment connection." >&2
+        exit 1
+      }
+  script:
+    - |
+      set -eu
+
+      ARTIFACT_IMAGE="${ARTIFACT_HOST}/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}"
+      IMAGE_NAME="${ARTIFACT_IMAGE}:${CI_COMMIT_TAG}"
+      SSH_TARGET="${SSH_USERNAME}@${SSH_IP}"
+      REMOTE_CONTEXT="production-${CI_PIPELINE_ID}-${CI_JOB_ID}"
+      REMOTE_DOCKER_CONFIG="/tmp/farm-dashboard-docker-${CI_PIPELINE_ID}-${CI_JOB_ID}"
+
+      trap 'docker context rm --force "$REMOTE_CONTEXT" >/dev/null 2>&1 || true; ssh -O exit "$SSH_TARGET" >/dev/null 2>&1 || true; ssh-agent -k >/dev/null 2>&1 || true' EXIT
+
+      ssh "$SSH_TARGET" "
+        set -eu
+        docker version >/dev/null || { echo 'Docker is not available to the SSH user.' >&2; exit 1; }
+        docker compose version >/dev/null || { echo 'The Docker Compose plugin is not available to the SSH user.' >&2; exit 1; }
+        docker network inspect '${EXTERNAL_DOCKER_NETWORK}' >/dev/null || {
+          echo 'Docker network ${EXTERNAL_DOCKER_NETWORK} does not exist.' >&2
+          exit 1
+        }
+        test -r '${GCS_CREDENTIALS_HOST_PATH}' || {
+          echo 'GCS credential is missing or unreadable: ${GCS_CREDENTIALS_HOST_PATH}' >&2
+          exit 1
+        }
+        unexpected_owner=\$(docker ps --filter publish=${APPLICATION_PORT} --format '{{.Names}}' | grep -v '^farm-dashboard$' || true)
+        if [ -n \"\$unexpected_owner\" ]; then
+          echo 'Port ${APPLICATION_PORT} is already published by:' >&2
+          echo \"\$unexpected_owner\" >&2
+          exit 1
+        fi
+      "
+
+      printf '%s' "$GCP_ARTIFACT_KEY_BASE64" | base64 -d | ssh "$SSH_TARGET" "
+        set -eu
+        umask 077
+        remote_config='${REMOTE_DOCKER_CONFIG}'
+        trap 'rm -rf \"\$remote_config\"' EXIT
+        mkdir -p \"\$remote_config\"
+        DOCKER_CONFIG=\"\$remote_config\" docker login \
+          -u _json_key \
+          --password-stdin \
+          'https://${ARTIFACT_HOST}'
+        DOCKER_CONFIG=\"\$remote_config\" docker pull '${IMAGE_NAME}'
+      "
+
+      PREVIOUS_IMAGE=$(ssh "$SSH_TARGET" "docker inspect --format '{{.Config.Image}}' farm-dashboard 2>/dev/null || true")
+
+      docker context create "$REMOTE_CONTEXT" --docker "host=ssh://${SSH_TARGET}" >/dev/null
+
+      deploy_image() {
+        IMAGE_NAME="$1" docker --context "$REMOTE_CONTEXT" compose \
+          --env-file .docker/.env.production \
+          --file .docker/docker-compose.prod.yml \
+          up --detach --force-recreate --remove-orphans --wait --wait-timeout 120
+      }
+
+      deployment_ok=true
+      deploy_image "$IMAGE_NAME" || deployment_ok=false
+
+      if [ "$deployment_ok" = true ]; then
+        ssh "$SSH_TARGET" "curl --fail --silent --show-error http://127.0.0.1:${APPLICATION_PORT}/up >/dev/null" \
+          || deployment_ok=false
+      fi
+
+      if [ "$deployment_ok" = true ]; then
+        curl --fail --silent --show-error "${PUBLIC_APP_URL%/}/up" >/dev/null \
+          || deployment_ok=false
+      fi
+
+      if [ "$deployment_ok" != true ]; then
+        echo "Production health verification failed." >&2
+        if [ -n "$PREVIOUS_IMAGE" ]; then
+          echo "Rolling back to ${PREVIOUS_IMAGE}." >&2
+          deploy_image "$PREVIOUS_IMAGE" || echo "Automatic rollback also failed." >&2
+        fi
+        exit 1
+      fi
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+
+.cleanup_registry_template:
+  stage: cleanup
+  image:
+    name: google/cloud-sdk:stable
+    entrypoint: [""]
+  cache: {}
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - |
+      set -eu
+      for value in "$ARTIFACT_HOST" "$GCP_PROJECT_ID" "$ARTIFACT_REPOSITORY"; do
+        case "$value" in
+          ""|*REPLACE_ME*) echo "Artifact Registry configuration is incomplete." >&2; exit 1 ;;
+        esac
+      done
+      test -n "${GCP_ARTIFACT_KEY_BASE64:-}" || {
+        echo "GCP_ARTIFACT_KEY_BASE64 is required." >&2
+        exit 1
+      }
+      export GCP_KEY_FILE
+      GCP_KEY_FILE=$(mktemp)
+      printf '%s' "$GCP_ARTIFACT_KEY_BASE64" | base64 -d > "$GCP_KEY_FILE"
+      gcloud auth activate-service-account --key-file "$GCP_KEY_FILE"
+  script:
+    - |
+      set -eu
+      ARTIFACT_IMAGE="${ARTIFACT_HOST}/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}"
+      untagged_file=$(mktemp)
+      trap 'rm -f "$untagged_file" "${GCP_KEY_FILE:-}"' EXIT
+      gcloud artifacts docker images list "$ARTIFACT_IMAGE" \
+        --include-tags \
+        --filter='NOT tags:*' \
+        --format='value(version)' > "$untagged_file"
+      while IFS= read -r version; do
+        test -n "$version" || continue
+        digest="${version##*/}"
+        gcloud artifacts docker images delete "${ARTIFACT_IMAGE}@${digest}" --quiet
+      done < "$untagged_file"
+
+cleanup_main:
+  extends: .cleanup_registry_template
+  needs:
+    - build_main
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
+
+cleanup_prod:
+  extends: .cleanup_registry_template
+  needs:
+    - deploy_prod
+  environment:
+    name: production
+    action: verify
+  before_script:
+    - apt-get update && apt-get install --yes --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
+    - |
+      set -eu
+      for value in "$ARTIFACT_HOST" "$GCP_PROJECT_ID" "$ARTIFACT_REPOSITORY" "$SSH_HOST_KEY_SHA256"; do
+        case "$value" in
+          ""|*REPLACE_ME*) echo "Cleanup configuration is incomplete." >&2; exit 1 ;;
+        esac
+      done
+      test -n "${GCP_ARTIFACT_KEY_BASE64:-}" || { echo "GCP_ARTIFACT_KEY_BASE64 is required." >&2; exit 1; }
+      test -n "${SSH_USERNAME:-}" || { echo "SSH_USERNAME is required." >&2; exit 1; }
+      test -n "${SSH_IP:-}" || { echo "SSH_IP is required." >&2; exit 1; }
+      test -n "${SSH_PRIVATE_KEY_BASE64:-}" || { echo "SSH_PRIVATE_KEY_BASE64 is required." >&2; exit 1; }
+      export GCP_KEY_FILE
+      GCP_KEY_FILE=$(mktemp)
+      printf '%s' "$GCP_ARTIFACT_KEY_BASE64" | base64 -d > "$GCP_KEY_FILE"
+      gcloud auth activate-service-account --key-file "$GCP_KEY_FILE"
+      eval "$(ssh-agent -s)"
+      printf '%s' "$SSH_PRIVATE_KEY_BASE64" | base64 -d | tr -d '\r' | ssh-add -
+      install -d -m 700 ~/.ssh
+      ssh-keyscan -T 10 -H "$SSH_IP" > ~/.ssh/known_hosts
+      chmod 600 ~/.ssh/known_hosts
+      ssh-keygen -lf ~/.ssh/known_hosts -E sha256 \
+        | awk '{print $2}' \
+        | grep -Fx "$SSH_HOST_KEY_SHA256" > /dev/null || {
+          echo "The server SSH host-key fingerprint does not match SSH_HOST_KEY_SHA256." >&2
+          exit 1
+        }
+  script:
+    - |
+      set -eu
+      ARTIFACT_IMAGE="${ARTIFACT_HOST}/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}"
+      untagged_file=$(mktemp)
+      trap 'rm -f "$untagged_file" "${GCP_KEY_FILE:-}"; ssh-agent -k >/dev/null 2>&1 || true' EXIT
+      gcloud artifacts docker images list "$ARTIFACT_IMAGE" \
+        --include-tags \
+        --filter='NOT tags:*' \
+        --format='value(version)' > "$untagged_file"
+      while IFS= read -r version; do
+        test -n "$version" || continue
+        digest="${version##*/}"
+        gcloud artifacts docker images delete "${ARTIFACT_IMAGE}@${digest}" --quiet
+      done < "$untagged_file"
+      ssh "${SSH_USERNAME}@${SSH_IP}" "docker system prune --all --force"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/ && $CI_COMMIT_REF_PROTECTED == "true"'

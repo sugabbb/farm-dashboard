@@ -1,0 +1,67 @@
+services:
+  farm-dashboard:
+    image: farm-dashboard:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        IMAGE_VERSION: development
+        VCS_REF: local
+    container_name: farm-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env.development
+    ports:
+      - "127.0.0.1:7000:80"
+    volumes:
+      - farm-dashboard-storage:/var/www/html/storage
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1/up"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - drml-dev
+
+  farm-dashboard-scheduler:
+    image: farm-dashboard:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        IMAGE_VERSION: development
+        VCS_REF: local
+    container_name: farm-dashboard-scheduler
+    restart: unless-stopped
+    env_file:
+      - .env.development
+    command: ["su", "-s", "/bin/sh", "www-data", "-c", "php artisan schedule:work"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1 && grep -a -q 'schedule:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    volumes:
+      - farm-dashboard-storage:/var/www/html/storage
+    depends_on:
+      farm-dashboard:
+        condition: service_healthy
+    networks:
+      - drml-dev
+
+networks:
+  drml-dev:
+    external: true
+    name: drml-dev
+
+volumes:
+  farm-dashboard-storage:

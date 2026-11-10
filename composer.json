@@ -1,0 +1,75 @@
+{
+  "$schema": "https://getcomposer.org/schema.json",
+  "name": "pondok-berkah/farm-dashboard",
+  "type": "project",
+  "description": "Farm operations and financial dashboard for Pondok Berkah Bersama",
+  "keywords": [
+    "laravel",
+    "framework"
+  ],
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "ext-bcmath": "*",
+    "ext-fileinfo": "*",
+    "ext-pdo_pgsql": "*",
+    "dedoc/scramble": "^0.13",
+    "google/cloud-storage": "^2.5",
+    "inertiajs/inertia-laravel": "^3.5",
+    "laravel/framework": "^12.0",
+    "league/flysystem-google-cloud-storage": "^3.0",
+    "phpoffice/phpspreadsheet": "^5.10"
+  },
+  "require-dev": {
+    "mockery/mockery": "^1.6",
+    "phpunit/phpunit": "^11.5.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "app/",
+      "Database\\Seeders\\": "database/seeders/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "post-autoload-dump": [
+      "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+      "@php artisan package:discover --ansi"
+    ],
+    "post-update-cmd": [
+      "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
+    ],
+    "post-root-package-install": [
+      "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+    ],
+    "post-create-project-cmd": [
+      "@php artisan key:generate --ansi"
+    ],
+    "dev": [
+      "Composer\\Config::disableProcessTimeout",
+      "@php artisan serve"
+    ],
+    "test": [
+      "@php vendor/bin/phpunit"
+    ]
+  },
+  "extra": {
+    "laravel": {
+      "dont-discover": []
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "platform": {
+      "php": "8.2.0"
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

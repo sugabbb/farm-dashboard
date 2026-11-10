@@ -1,0 +1,7 @@
+import { Link } from '@inertiajs/react';
+import { Button, Card } from 'react-bootstrap';
+import { AppShell, PageHeader } from '../components/AppShell';
+import { GrowthCard, type Growth } from './LeleBiomass';
+import { date, integer, numeric } from '../utils';
+type Group={id:number;name:string;code:string;location:string;status:string;start_date:string;closed_at:string|null;closure_reason:string|null;initial_population:number;current_population:number;initial_average_weight_g:string|null;planned_adg_g_per_day:string|null;growth:Growth|null};
+export default function LeleGroupDetail({group}:{group:Group}){return <AppShell title={`Detail ${group.name}`}><PageHeader eyebrow="Lele" title={`${group.name} · ${group.code}`} description={`${group.location} · ${group.status}`} actions={<Button as={Link as any} href="/lele/groups" variant="outline-primary">Kembali</Button>}/><Card className="mb-4"><Card.Body><div className="growth-meta"><span>Mulai <strong>{date(group.start_date)}</strong></span><span>Panen/ditutup <strong>{group.closed_at?date(group.closed_at):'Belum'}</strong></span><span>Populasi <strong>{integer(group.current_population)} / {integer(group.initial_population)}</strong></span><span>Berat awal <strong>{group.initial_average_weight_g?`${numeric(group.initial_average_weight_g)} g`:'Belum diisi'}</strong></span></div>{group.closure_reason&&<p className="mt-3 mb-0">Alasan panen: {group.closure_reason}</p>}</Card.Body></Card><GrowthCard title={`${group.name} · ${group.code}`} subtitle={group.location} growth={group.growth}/></AppShell>}

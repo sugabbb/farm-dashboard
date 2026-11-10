@@ -1,0 +1,10 @@
+import { Head, useForm } from '@inertiajs/react';
+import { FormEvent } from 'react';
+import { Alert, Button, Form, Spinner } from 'react-bootstrap';
+import { FieldError } from '../../components/FormControls';
+
+export default function Login() {
+  const form = useForm({ email: '', password: '', remember: false });
+  const submit = (event: FormEvent) => { event.preventDefault(); form.post('/login', { onFinish: () => form.reset('password') }); };
+  return <><Head title="Masuk"/><main className="login-shell"><section className="login-visual"><div><div className="eyebrow text-white">Pondok Berkah Bersama</div><h1>Kelola farm<br/>dengan lebih rapi.</h1><p>Operasional ayam dan lele, stok, serta keuangan dalam satu dashboard yang praktis.</p></div></section><section className="login-form-panel"><div className="login-form"><div className="eyebrow">Farm Management Dashboard</div><h2>Selamat datang</h2><p>Masuk menggunakan akun yang diberikan Superadmin.</p><div className="login-divider">Masuk</div>{Object.keys(form.errors).length > 0 && <Alert variant="danger">Periksa email dan kata sandi Anda.</Alert>}<Form onSubmit={submit}><Form.Group className="mb-4"><Form.Label>Email</Form.Label><Form.Control type="email" autoComplete="username" autoFocus value={form.data.email} onChange={e => form.setData('email', e.target.value)} isInvalid={Boolean(form.errors.email)}/><FieldError message={form.errors.email}/></Form.Group><Form.Group className="mb-4"><Form.Label>Kata sandi</Form.Label><Form.Control type="password" autoComplete="current-password" value={form.data.password} onChange={e => form.setData('password', e.target.value)} isInvalid={Boolean(form.errors.password)}/><FieldError message={form.errors.password}/></Form.Group><Form.Check className="mb-4" label="Ingat saya" checked={form.data.remember} onChange={e => form.setData('remember', e.target.checked)}/><Button type="submit" className="w-100" disabled={form.processing}>{form.processing && <Spinner size="sm"/>} Masuk</Button></Form><p className="small mt-4 mb-0">Hubungi Superadmin jika membutuhkan akun atau reset kata sandi.</p></div></section></main></>;
+}

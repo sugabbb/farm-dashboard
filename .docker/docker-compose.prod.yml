@@ -1,0 +1,57 @@
+services:
+  farm-dashboard:
+    image: ${IMAGE_NAME:?IMAGE_NAME must be set to an Artifact Registry image}
+    pull_policy: never
+    container_name: farm-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    ports:
+      - "127.0.0.1:9000:80"
+    volumes:
+      - farm-dashboard-storage:/var/www/html/storage
+      - ${GCS_CREDENTIALS_HOST_PATH:?GCS_CREDENTIALS_HOST_PATH must be set}:/var/run/secrets/gcs-service-account.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1/up"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - drml-development
+
+  farm-dashboard-scheduler:
+    image: ${IMAGE_NAME:?IMAGE_NAME must be set to an Artifact Registry image}
+    pull_policy: never
+    container_name: farm-dashboard-scheduler
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    command: ["su", "-s", "/bin/sh", "www-data", "-c", "php artisan schedule:work"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1 && grep -a -q 'schedule:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    volumes:
+      - farm-dashboard-storage:/var/www/html/storage
+      - ${GCS_CREDENTIALS_HOST_PATH:?GCS_CREDENTIALS_HOST_PATH must be set}:/var/run/secrets/gcs-service-account.json:ro
+    depends_on:
+      farm-dashboard:
+        condition: service_healthy
+    networks:
+      - drml-development
+
+networks:
+  drml-development:
+    external: true
+    name: drml-development
+
+volumes:
+  farm-dashboard-storage:

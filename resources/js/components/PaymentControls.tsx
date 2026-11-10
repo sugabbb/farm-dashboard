@@ -1,0 +1,20 @@
+import { useForm } from '@inertiajs/react';
+import { FormEvent, useEffect } from 'react';
+import { Alert, Button, Form, InputGroup, Modal } from 'react-bootstrap';
+import { date, dateTime, idr } from '../utils';
+import { DateField, FieldError, LocalizedNumberInput, ProofUpload, ProofViewer } from './FormControls';
+
+export type PaymentEntry={id:number;payment_mode:'PARTIAL'|'FULL';paid_date:string;amount_idr:string;proof_url:string|null;creator_name:string|null;created_at:string;voided_at:string|null;voider_name:string|null;void_reason:string|null};
+
+export function PaymentModal({show,onHide,title,url,transactionDate,today,remaining,onSuccess}:{show:boolean;onHide:()=>void;title:string;url:string;transactionDate:string;today:string;remaining:string;onSuccess?:()=>void}){
+ const form=useForm<{payment_mode:'PARTIAL'|'FULL';paid_date:string;amount_idr:string;proof:File|null}>({payment_mode:'FULL',paid_date:transactionDate<today?transactionDate:today,amount_idr:'',proof:null});
+ useEffect(()=>{if(show){form.setData({payment_mode:'FULL',paid_date:transactionDate<today?transactionDate:today,amount_idr:'',proof:null});form.clearErrors();}},[show,transactionDate,today]);
+ const submit=(event:FormEvent)=>{event.preventDefault();if(form.processing)return;form.post(url,{forceFormData:true,preserveScroll:true,onSuccess:()=>{onHide();onSuccess?.();}});};
+ const errors=form.errors as Record<string,string|undefined>;
+ return <Modal show={show} onHide={onHide} centered><Form onSubmit={submit}><Modal.Header closeButton><Modal.Title>{title}</Modal.Title></Modal.Header><Modal.Body>{errors.transaction&&<Alert variant="danger">{errors.transaction}</Alert>}<Form.Group><Form.Label>Jenis pembayaran</Form.Label><div className="d-flex gap-3"><Form.Check type="radio" label="Full" checked={form.data.payment_mode==='FULL'} onChange={()=>form.setData('payment_mode','FULL')}/><Form.Check type="radio" label="Partial" checked={form.data.payment_mode==='PARTIAL'} onChange={()=>form.setData('payment_mode','PARTIAL')}/></div></Form.Group><div className="mt-3"><DateField label="Tanggal pembayaran" value={form.data.paid_date} max={today} required onChange={paid_date=>form.setData('paid_date',paid_date)} error={form.errors.paid_date}/></div>{form.data.payment_mode==='FULL'?<Alert variant="info" className="mt-3 mb-0">Pembayaran penuh sebesar <strong>{idr(remaining)}</strong>.</Alert>:<Form.Group className="mt-3"><Form.Label>Jumlah pembayaran sebagian</Form.Label><InputGroup><InputGroup.Text>Rp</InputGroup.Text><LocalizedNumberInput value={form.data.amount_idr} onChange={amount_idr=>form.setData('amount_idr',amount_idr)}/></InputGroup><FieldError message={form.errors.amount_idr}/><Form.Text>Maksimal harus lebih kecil dari sisa {idr(remaining)}.</Form.Text></Form.Group>}<div className="mt-3"><ProofUpload progress={form.progress?.percentage} error={form.errors.proof} onChange={proof=>form.setData('proof',proof)}/></div></Modal.Body><Modal.Footer><Button variant="light" onClick={onHide}>Batal</Button><Button type="submit" disabled={form.processing}>Simpan Pembayaran</Button></Modal.Footer></Form></Modal>;
+}
+
+export function PaymentHistory({payments,onVoid}:{payments:PaymentEntry[];onVoid?:(payment:PaymentEntry)=>void}){
+ if(!payments.length)return <p className="text-muted mb-0">Belum ada riwayat pembayaran.</p>;
+ return <div className="payment-history">{payments.map(payment=><div className={`summary-line ${payment.voided_at?'opacity-50':''}`} key={payment.id}><div><strong>{payment.payment_mode==='FULL'?'Full':'Partial'} · {idr(payment.amount_idr)}</strong><small className="d-block">{date(payment.paid_date)} · {payment.creator_name}</small>{payment.voided_at&&<small className="d-block text-danger">Dibatalkan {dateTime(payment.voided_at)} oleh {payment.voider_name} · {payment.void_reason}</small>}{payment.proof_url&&<div><ProofViewer url={payment.proof_url}/></div>}</div>{!payment.voided_at&&onVoid&&<Button size="sm" variant="outline-danger" onClick={()=>onVoid(payment)}>Batalkan</Button>}</div>)}</div>;
+}

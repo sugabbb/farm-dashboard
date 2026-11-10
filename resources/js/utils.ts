@@ -1,0 +1,20 @@
+type NumericValue = string | number | null | undefined;
+export const numeric = (value: NumericValue, options: Intl.NumberFormatOptions = {}) => new Intl.NumberFormat('en-US', options).format(Number(value ?? 0));
+export const idr = (value: NumericValue) => `Rp ${numeric(value, { maximumFractionDigits: 0 })}`;
+export const kg = (value: NumericValue) => `${numeric(value, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg`;
+export const integer = (value: NumericValue) => numeric(value, { maximumFractionDigits: 0 });
+export const percentage = (value: NumericValue) => value === null || value === undefined ? '—' : `${numeric(value, { maximumFractionDigits: 2 })}%`;
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+export const date = (value: string | null | undefined) => value ? capitalize(new Intl.DateTimeFormat('id-ID', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Jakarta' }).format(new Date(`${value.slice(0, 10)}T00:00:00+07:00`))) : '—';
+export const dateTime = (value: string | null | undefined) => {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Jakarta' }).formatToParts(parsed);
+  const part = (type: string) => parts.find(item => item.type === type)?.value ?? '';
+  const time = new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Jakarta' }).format(parsed).replace(':', '.');
+  return `${date(`${part('year')}-${part('month')}-${part('day')}`)}, ${time}`;
+};
+export const titleCase = (value: string) => value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, character => character.toUpperCase());
+export const eggCategoryLabel = (value: string) => value === 'REJECT' ? 'RIJEK' : value;
+export const leleGroupLabel = (group: { location: string; name: string }) => `${group.location} - ${group.name}`;
+export const query = (values: Record<string, string | number | null | undefined>) => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== '' && value !== null && value !== undefined));
